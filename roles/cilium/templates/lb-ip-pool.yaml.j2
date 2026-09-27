@@ -1,0 +1,9 @@
+apiVersion: "cilium.io/v2"
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: "{{ cilium_lb_pool_name }}"
+spec:
+  # Define IP range for Service type: LoadBalancer
+  blocks:
+    - start: "{{ cilium_lb_pool_start }}"
+      stop: "{{ cilium_lb_pool_stop }}"

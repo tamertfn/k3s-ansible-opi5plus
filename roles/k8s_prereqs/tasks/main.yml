@@ -1,0 +1,124 @@
+---
+# Base system prerequisites required for Kubernetes, Cilium, and Kube-VIP
+
+# -------------------------------------------------------------
+# Static DNS / Host Resolution (/etc/hosts)
+# -------------------------------------------------------------
+- name: Ensure cluster host mappings exist in /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^#?\\s*{{ item.ip | regex_escape }}\\s+"
+    line: "{{ item.ip }} {{ item.canonical }} {{ item.aliases }}"
+    state: present
+  loop: "{{ cluster_hosts_entries }}"
+
+# -------------------------------------------------------------
+# Swap Management
+# -------------------------------------------------------------
+- name: Disable swap immediately
+  ansible.builtin.command: swapoff -a
+  when: ansible_facts['swaptotal_mb'] > 0
+  changed_when: false
+
+- name: Disable swap persistently in fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#\s]+\s+[^#\s]+\s+swap\s+.*)$'
+    replace: '# \1'
+
+# -------------------------------------------------------------
+# Kernel Modules & eBPF Filesystem
+# -------------------------------------------------------------
+- name: Load standard kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Persist kernel modules across reboots
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: '0644'
+
+- name: Ensure BPF filesystem mount directory exists
+  ansible.builtin.file:
+    path: /sys/fs/bpf
+    state: directory
+    mode: '0755'
+
+- name: Ensure BPF filesystem is mounted and persisted in fstab
+  ansible.posix.mount:
+    path: /sys/fs/bpf
+    src: bpffs
+    fstype: bpf
+    opts: defaults
+    state: mounted
+
+# -------------------------------------------------------------
+# Sysctl Parameters
+# -------------------------------------------------------------
+- name: Configure sysctl parameters for networking and Cilium
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_set: yes
+    sysctl_file: /etc/sysctl.d/99-k8s.conf
+    reload: yes
+  loop:
+    - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+    - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+    - { name: 'net.ipv4.ip_forward', value: '1' }
+    - { name: 'net.ipv6.conf.all.forwarding', value: '1' }
+    - { name: 'fs.inotify.max_user_instances', value: '524288' }
+    - { name: 'fs.inotify.max_user_watches', value: '524288' }
+
+# -------------------------------------------------------------
+# Required System Packages
+# -------------------------------------------------------------
+- name: Ensure required networking and utility packages are present
+  ansible.builtin.apt:
+    name:
+      - curl
+      - conntrack
+      - ipset
+      - iptables
+      - socat
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+# -------------------------------------------------------------
+# Firewall (UFW) Configuration for Kubernetes & Kube-VIP
+# -------------------------------------------------------------
+- name: Allow intra-cluster communication in UFW
+  community.general.ufw:
+    rule: allow
+    src: "{{ cluster_network_subnet }}"
+    comment: "Kubernetes and Cilium internal cluster subnet"
+
+- name: Allow K3s API access from admin workstation in UFW
+  community.general.ufw:
+    rule: allow
+    src: "{{ admin_client_ip }}"
+    port: "6443"
+    proto: tcp
+    comment: "Admin K3s API access"
+
+- name: Set UFW default forward policy to ACCEPT for pod routing
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: '^DEFAULT_FORWARD_POLICY='
+    line: 'DEFAULT_FORWARD_POLICY="ACCEPT"'
+  register: ufw_forward_policy
+
+- name: Reload UFW service if configuration changed
+  ansible.builtin.command: ufw reload
+  when: ufw_forward_policy.changed
+  changed_when: true
+

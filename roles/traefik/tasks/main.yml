@@ -1,0 +1,155 @@
+---
+- name: Add Traefik Helm chart repository
+  ansible.builtin.command: helm repo add {{ traefik_chart_repo_name }} {{ traefik_chart_repo_url }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Update Traefik Helm chart repository
+  ansible.builtin.command: helm repo update {{ traefik_chart_repo_name }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Create certificate directory for Traefik
+  ansible.builtin.file:
+    path: "{{ pki_base_dir }}/issued_certs/{{ traefik_base_domain }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Generate private key for Traefik TLS
+  community.crypto.openssl_privatekey:
+    path: "{{ pki_base_dir }}/issued_certs/{{ traefik_base_domain }}/tls.key"
+    type: "ECC"
+    curve: "secp384r1"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Generate certificate signing request for Traefik
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ pki_base_dir }}/issued_certs/{{ traefik_base_domain }}/tls.key"
+    common_name: "{{ traefik_base_domain }}"
+    organization_name: "{{ pki_organization }}"
+    country_name: "{{ pki_country }}"
+    subject_alt_name:
+      - "DNS:{{ traefik_base_domain }}"
+      - "DNS:*.{{ traefik_base_domain }}"
+      - "DNS:{{ base_domain }}"
+      - "DNS:*.{{ base_domain }}"
+      - "DNS:*.docker.localhost"
+      - "DNS:localhost"
+    key_usage:
+      - digitalSignature
+      - keyEncipherment
+    extended_key_usage:
+      - serverAuth
+      - clientAuth
+  register: traefik_csr
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Sign Traefik TLS certificate with Intermediate CA
+  community.crypto.x509_certificate:
+    path: "{{ pki_base_dir }}/issued_certs/{{ traefik_base_domain }}/tls.crt"
+    csr_content: "{{ traefik_csr.csr }}"
+    ownca_path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt"
+    ownca_privatekey_path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.key"
+    provider: ownca
+    ownca_not_after: "+365d"
+    ownca_digest: "sha384"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Build full certificate chain for Traefik
+  ansible.builtin.shell: |
+    cat "{{ pki_base_dir }}/issued_certs/{{ traefik_base_domain }}/tls.crt" \
+        "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt" \
+        "{{ pki_base_dir }}/root_ca/root_ca.crt" > "{{ pki_base_dir }}/issued_certs/{{ traefik_base_domain }}/fullchain.crt"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Create local Traefik output directory
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/../traefik/rendered"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Render Traefik Helm values
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: "{{ playbook_dir }}/../traefik/rendered/values.yaml"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Ensure Traefik namespace exists in cluster
+  ansible.builtin.shell: |
+    /usr/local/bin/k3s kubectl create namespace {{ traefik_namespace }} --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Copy TLS certificates to init server node for secret creation
+  ansible.builtin.copy:
+    src: "{{ pki_base_dir }}/issued_certs/{{ traefik_base_domain }}/{{ item }}"
+    dest: "/tmp/{{ item }}"
+    mode: '0600'
+  loop:
+    - fullchain.crt
+    - tls.key
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Create or update Traefik TLS secret in cluster
+  ansible.builtin.shell: |
+    /usr/local/bin/k3s kubectl create secret tls {{ traefik_tls_secret_name }} \
+      --cert=/tmp/fullchain.crt \
+      --key=/tmp/tls.key \
+      --namespace {{ traefik_namespace }} \
+      --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Clean up temporary certificate files on init node
+  ansible.builtin.file:
+    path: "/tmp/{{ item }}"
+    state: absent
+  loop:
+    - fullchain.crt
+    - tls.key
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Install or upgrade Traefik via Helm
+  ansible.builtin.command: >
+    helm upgrade --install traefik {{ traefik_chart_repo_name }}/traefik
+    --version {{ traefik_chart_version }}
+    --namespace {{ traefik_namespace }}
+    -f {{ playbook_dir }}/../traefik/rendered/values.yaml
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Wait for Traefik Deployment to be rolled out
+  ansible.builtin.command: /usr/local/bin/k3s kubectl rollout status deployment/traefik -n {{ traefik_namespace }} --timeout=180s
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Verify Traefik LoadBalancer Service status
+  ansible.builtin.command: /usr/local/bin/k3s kubectl get svc traefik -n {{ traefik_namespace }}
+  register: traefik_svc
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Display Traefik service details
+  ansible.builtin.debug:
+    var: traefik_svc.stdout_lines
+  when: inventory_hostname == k3s_server_init_node

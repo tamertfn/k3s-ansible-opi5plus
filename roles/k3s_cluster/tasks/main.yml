@@ -1,0 +1,110 @@
+---
+- name: Check if K3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Create K3s configuration and manifest directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /etc/rancher/k3s
+    - /var/lib/rancher/k3s/server/manifests
+
+- name: Deploy K3s configuration template on all nodes
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Determine active network interface matching enP* pattern
+  ansible.builtin.set_fact:
+    kube_vip_active_interface: "{{ kube_vip_interface if (kube_vip_interface is defined and kube_vip_interface) else ((ansible_interfaces | default([]) | select('match', '^enP.*') | select('equalto', ansible_default_ipv4.interface) | first) | default(ansible_interfaces | default([]) | select('match', '^enP.*') | first) | default(ansible_default_ipv4.interface | default('eth0'))) | trim }}"
+
+- name: Deploy Kube-VIP auto-deploy manifest template
+  ansible.builtin.template:
+    src: kube-vip.yaml.j2
+    dest: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Check installed K3s version
+  ansible.builtin.command: /usr/local/bin/k3s --version
+  register: k3s_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Install or upgrade K3s on init server node
+  ansible.builtin.shell: |
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" sh -s - server
+  when:
+    - inventory_hostname == k3s_server_init_node
+    - not k3s_binary.stat.exists or k3s_version not in (k3s_version_check.stdout | default(''))
+
+- name: Wait for local K3s API to become ready on init node
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[k3s_server_init_node]['ansible_host'] }}"
+    port: 6443
+    delay: 5
+    timeout: 120
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Wait for Kube-VIP ({{ kube_vip_address }}:6443) to become ready
+  ansible.builtin.wait_for:
+    host: "{{ kube_vip_address }}"
+    port: 6443
+    delay: 5
+    timeout: 120
+  delegate_to: localhost
+  become: false
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Install or upgrade K3s on secondary server nodes
+  ansible.builtin.shell: |
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" sh -s - server
+  throttle: 1
+  when:
+    - inventory_hostname != k3s_server_init_node
+    - not k3s_binary.stat.exists or k3s_version not in (k3s_version_check.stdout | default(''))
+
+- name: Wait for K3s API to become ready on secondary nodes
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 6443
+    delay: 5
+    timeout: 120
+  throttle: 1
+  when: inventory_hostname != k3s_server_init_node
+
+- name: Fetch kubeconfig file from init node to local machine
+  ansible.builtin.fetch:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "{{ playbook_dir }}/../kubeconfig"
+    flat: yes
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Update kubeconfig server address to Kube-VIP
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/../kubeconfig"
+    regexp: 'https://127.0.0.1:6443'
+    replace: "https://{{ kube_vip_address }}:6443"
+  delegate_to: localhost
+  become: false
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Verify K3s cluster node registration
+  ansible.builtin.command: /usr/local/bin/k3s kubectl get nodes -o wide
+  register: cluster_nodes
+  changed_when: false
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Display K3s cluster node status
+  ansible.builtin.debug:
+    var: cluster_nodes.stdout_lines
+  when: inventory_hostname == k3s_server_init_node
+

@@ -1,0 +1,94 @@
+---
+# -------------------------------------------------------------
+# System Package Updates & Essential Baseline Packages
+# -------------------------------------------------------------
+- name: Update apt package cache
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 0
+
+- name: Upgrade all system packages to latest versions
+  ansible.builtin.apt:
+    upgrade: dist
+    autoremove: yes
+    autoclean: yes
+
+- name: Ensure baseline system and Kubernetes prerequisite packages are installed
+  ansible.builtin.apt:
+    name: "{{ node_essential_packages }}"
+    state: present
+
+
+# -------------------------------------------------------------
+# SSH Hardening and CA Integration
+# -------------------------------------------------------------
+- name: Check systemd ssh socket status
+  ansible.builtin.systemd:
+    name: ssh.socket
+  register: ssh_socket_check
+  ignore_errors: true
+
+- name: Disable systemd ssh socket to allow direct port configuration
+  ansible.builtin.systemd:
+    name: ssh.socket
+    state: stopped
+    enabled: false
+  when: ssh_socket_check.status is defined and ssh_socket_check.status.ActiveState == "active"
+
+- name: Ensure standard ssh service is enabled and started
+  ansible.builtin.systemd:
+    name: ssh.service
+    enabled: true
+    state: started
+
+- name: Deploy SSH CA public key for user authentication
+  ansible.builtin.copy:
+    src: "{{ pki_base_dir }}/ssh_ca/{{ ssh_ca_key_name }}.pub"
+    dest: /etc/ssh/trusted-user-ca-keys.pem
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Remove legacy 99-hardening.conf if present
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/99-hardening.conf
+    state: absent
+
+- name: Deploy SSH hardening configuration as highest priority drop-in
+  ansible.builtin.template:
+    src: 00-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/00-hardening.conf
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart ssh
+
+- name: Validate complete SSH daemon configuration
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+
+- name: Apply SSH configuration changes immediately
+  ansible.builtin.meta: flush_handlers
+
+# -------------------------------------------------------------
+# Firewall Configuration (Base System Hardening Only)
+# -------------------------------------------------------------
+- name: Set UFW default policies
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
+  loop:
+    - { direction: 'incoming', policy: 'deny' }
+    - { direction: 'outgoing', policy: 'allow' }
+
+- name: Allow SSH access strictly from admin workstation IP
+  community.general.ufw:
+    rule: allow
+    src: "{{ admin_client_ip }}"
+    port: "{{ target_ssh_port | string }}"
+    proto: tcp
+    comment: "Admin Workstation SSH"
+
+- name: Enable UFW firewall service
+  community.general.ufw:
+    state: enabled

@@ -1,0 +1,81 @@
+---
+- name: Issue TLS certificate from Intermediate CA
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cert_validity_days: "{{ client_cert_default_validity_days }}"
+    cert_key_type: "{{ client_cert_default_key_type }}"
+    cert_curve: "{{ client_cert_default_curve }}"
+    cert_digest: "{{ client_cert_default_digest }}"
+    cert_target_dir: "{{ pki_base_dir }}/issued_certs/{{ cert_domain }}"
+    cert_subject_alt_names:
+      - "DNS:{{ cert_domain }}"
+      - "DNS:*.{{ cert_domain }}"
+
+  tasks:
+    - name: Ensure target domain is provided
+      ansible.builtin.assert:
+        that:
+          - cert_domain is defined
+          - cert_domain | length > 0
+        fail_msg: "Specify the certificate domain using -e 'cert_domain=<domain>'"
+
+    - name: Create certificate output directory
+      ansible.builtin.file:
+        path: "{{ cert_target_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Generate private key
+      community.crypto.openssl_privatekey:
+        path: "{{ cert_target_dir }}/tls.key"
+        type: "{{ cert_key_type }}"
+        curve: "{{ cert_curve }}"
+        mode: '0600'
+
+    - name: Generate certificate signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ cert_target_dir }}/tls.key"
+        common_name: "{{ cert_domain }}"
+        organization_name: "{{ pki_organization }}"
+        country_name: "{{ pki_country }}"
+        subject_alt_name: "{{ cert_subject_alt_names }}"
+        key_usage:
+          - digitalSignature
+          - keyEncipherment
+        extended_key_usage:
+          - serverAuth
+          - clientAuth
+      register: cert_csr
+
+    - name: Sign certificate with Intermediate CA
+      community.crypto.x509_certificate:
+        path: "{{ cert_target_dir }}/tls.crt"
+        csr_content: "{{ cert_csr.csr }}"
+        ownca_path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt"
+        ownca_privatekey_path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.key"
+        provider: ownca
+        ownca_not_after: "+{{ cert_validity_days }}d"
+        ownca_digest: "{{ cert_digest }}"
+        mode: '0644'
+
+    - name: Build full certificate chain
+      ansible.builtin.shell: |
+        cat "{{ cert_target_dir }}/tls.crt" "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt" "{{ pki_base_dir }}/root_ca/root_ca.crt" > "{{ cert_target_dir }}/fullchain.crt"
+      args:
+        creates: "{{ cert_target_dir }}/fullchain.crt"
+
+    - name: Read certificate metadata
+      community.crypto.x509_certificate_info:
+        path: "{{ cert_target_dir }}/tls.crt"
+      register: cert_info
+
+    - name: Display certificate issuance summary
+      ansible.builtin.debug:
+        msg:
+          - "Domain: {{ cert_domain }}"
+          - "Valid until: {{ cert_info.not_after }}"
+          - "Certificate path: {{ cert_target_dir }}/tls.crt"
+          - "Fullchain path: {{ cert_target_dir }}/fullchain.crt"
+          - "Key path: {{ cert_target_dir }}/tls.key"

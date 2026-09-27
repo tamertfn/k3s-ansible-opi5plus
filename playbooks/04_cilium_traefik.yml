@@ -1,0 +1,77 @@
+---
+# =============================================================
+# Playbook 04: Deploy Cilium CNI and Traefik Ingress/Gateway
+# =============================================================
+
+- name: Detect active SSH port and establish connection parameters
+  hosts: opi_nodes
+  gather_facts: false
+  tasks:
+    - name: Probe target SSH port
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ target_ssh_port }}"
+        timeout: 2
+        state: started
+      register: target_port_probe
+      ignore_errors: true
+      delegate_to: localhost
+
+    - name: Assign active SSH connection port
+      ansible.builtin.set_fact:
+        ansible_port: "{{ target_ssh_port if target_port_probe is succeeded else default_ssh_port }}"
+
+- name: Update cluster DNS host mappings on all nodes
+  hosts: opi_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure cluster host mappings exist in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: "^#?\\s*{{ item.ip | regex_escape }}\\s+"
+        line: "{{ item.ip }} {{ item.canonical }} {{ item.aliases }}"
+        state: present
+      loop: "{{ cluster_hosts_entries }}"
+
+- name: Deploy Cilium CNI with eBPF Kube-Proxy Replacement and L2 Announcements
+  hosts: opi_nodes
+  become: true
+  gather_facts: false
+  roles:
+    - role: cilium
+
+- name: Scale core system deployments for high availability
+  hosts: opi_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Scale core system deployments (coredns, metrics-server, local-path-provisioner)
+      ansible.builtin.command: >
+        /usr/local/bin/k3s kubectl scale deployment {{ item.key }}
+        -n kube-system --replicas={{ item.value }}
+      loop: "{{ k3s_core_deployments_replicas | dict2items }}"
+      when: inventory_hostname == k3s_server_init_node
+
+    - name: Verify core system deployments status
+      ansible.builtin.command: >
+        /usr/local/bin/k3s kubectl get deployment {{ item.key }} -n kube-system
+      loop: "{{ k3s_core_deployments_replicas | dict2items }}"
+      register: core_scale_status
+      when: inventory_hostname == k3s_server_init_node
+      changed_when: false
+
+    - name: Display core system deployments scaling status
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ core_scale_status.results }}"
+      when:
+        - inventory_hostname == k3s_server_init_node
+        - item.stdout_lines is defined
+
+- name: Deploy Traefik Gateway and Ingress with Intermediate CA TLS
+  hosts: opi_nodes
+  become: true
+  gather_facts: false
+  roles:
+    - role: traefik

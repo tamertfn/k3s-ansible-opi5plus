@@ -1,0 +1,27 @@
+---
+- name: Detect active SSH port and establish connection parameters
+  hosts: opi_nodes
+  gather_facts: false
+  tasks:
+    - name: Probe target SSH port
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ target_ssh_port }}"
+        timeout: 2
+        state: started
+      register: target_port_probe
+      ignore_errors: true
+      delegate_to: localhost
+
+    - name: Assign active SSH connection port
+      ansible.builtin.set_fact:
+        ansible_port: "{{ target_ssh_port if target_port_probe is succeeded else default_ssh_port }}"
+
+- name: Prepare prerequisites and deploy HA K3s cluster with Kube-VIP
+  hosts: opi_nodes
+  become: true
+  gather_facts: true
+  roles:
+    - role: k8s_prereqs
+    - role: k3s_cluster
+

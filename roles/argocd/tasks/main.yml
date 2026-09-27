@@ -1,0 +1,332 @@
+---
+- name: Add ArgoCD Helm chart repository
+  ansible.builtin.command: helm repo add {{ argocd_chart_repo_name }} {{ argocd_chart_repo_url }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Update ArgoCD Helm chart repository
+  ansible.builtin.command: helm repo update {{ argocd_chart_repo_name }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Create certificate directory for ArgoCD
+  ansible.builtin.file:
+    path: "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Generate private key for ArgoCD TLS
+  community.crypto.openssl_privatekey:
+    path: "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}/tls.key"
+    type: "ECC"
+    curve: "secp384r1"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Generate certificate signing request for ArgoCD
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}/tls.key"
+    common_name: "{{ argocd_domain }}"
+    organization_name: "{{ pki_organization }}"
+    country_name: "{{ pki_country }}"
+    subject_alt_name:
+      - "DNS:{{ argocd_domain }}"
+      - "DNS:*.opi.{{ base_domain }}"
+      - "DNS:opi.{{ base_domain }}"
+      - "DNS:{{ base_domain }}"
+      - "DNS:localhost"
+    key_usage:
+      - digitalSignature
+      - keyEncipherment
+    extended_key_usage:
+      - serverAuth
+      - clientAuth
+  register: argocd_csr
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Sign ArgoCD TLS certificate with Intermediate CA
+  community.crypto.x509_certificate:
+    path: "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}/tls.crt"
+    csr_content: "{{ argocd_csr.csr }}"
+    ownca_path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt"
+    ownca_privatekey_path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.key"
+    provider: ownca
+    ownca_not_after: "+365d"
+    ownca_digest: "sha384"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Build full certificate chain for ArgoCD
+  ansible.builtin.shell: |
+    cat "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}/tls.crt" \
+        "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt" \
+        "{{ pki_base_dir }}/root_ca/root_ca.crt" > "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}/fullchain.crt"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Create local ArgoCD output directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - "{{ playbook_dir }}/../argocd/rendered"
+    - "{{ playbook_dir }}/../argocd/certs"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Sync TLS certificates to local argocd certs directory
+  ansible.builtin.copy:
+    src: "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}/{{ item }}"
+    dest: "{{ playbook_dir }}/../argocd/certs/{{ item }}"
+    mode: '0644'
+  loop:
+    - fullchain.crt
+    - tls.crt
+    - tls.key
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Render ArgoCD Helm values
+  ansible.builtin.template:
+    src: values.yaml.j2
+    dest: "{{ playbook_dir }}/../argocd/rendered/values.yaml"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Ensure ArgoCD namespace exists in cluster
+  ansible.builtin.shell: |
+    /usr/local/bin/k3s kubectl create namespace {{ argocd_namespace }} --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Copy TLS certificates to init server node for secret creation
+  ansible.builtin.copy:
+    src: "{{ pki_base_dir }}/issued_certs/{{ argocd_domain }}/{{ item }}"
+    dest: "/tmp/{{ item }}"
+    mode: '0600'
+  loop:
+    - fullchain.crt
+    - tls.key
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Create or update ArgoCD TLS secret in cluster
+  ansible.builtin.shell: |
+    /usr/local/bin/k3s kubectl create secret tls {{ argocd_tls_secret_name }} \
+      --cert=/tmp/fullchain.crt \
+      --key=/tmp/tls.key \
+      --namespace {{ argocd_namespace }} \
+      --dry-run=client -o yaml | /usr/local/bin/k3s kubectl apply -f -
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Clean up temporary certificate files on init node
+  ansible.builtin.file:
+    path: "/tmp/{{ item }}"
+    state: absent
+  loop:
+    - fullchain.crt
+    - tls.key
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Install or upgrade ArgoCD via Helm
+  ansible.builtin.command: >
+    helm upgrade --install argocd {{ argocd_chart_repo_name }}/argo-cd
+    --version {{ argocd_chart_version }}
+    --namespace {{ argocd_namespace }}
+    -f {{ playbook_dir }}/../argocd/rendered/values.yaml
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Wait for ArgoCD Server deployment to be rolled out
+  ansible.builtin.command: /usr/local/bin/k3s kubectl rollout status deployment/argocd-server -n {{ argocd_namespace }} --timeout=300s
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Wait for ArgoCD Repo Server deployment to be rolled out
+  ansible.builtin.command: /usr/local/bin/k3s kubectl rollout status deployment/argocd-repo-server -n {{ argocd_namespace }} --timeout=300s
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Wait for ArgoCD Application Controller to become ready
+  ansible.builtin.command: /usr/local/bin/k3s kubectl rollout status statefulset/argocd-application-controller -n {{ argocd_namespace }} --timeout=300s
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+  failed_when: false
+
+- name: Wait for ArgoCD ApplicationSet Controller deployment to be rolled out
+  ansible.builtin.command: /usr/local/bin/k3s kubectl rollout status deployment/argocd-applicationset-controller -n {{ argocd_namespace }} --timeout=300s
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Wait for ArgoCD Redis HA StatefulSet to become ready
+  ansible.builtin.command: /usr/local/bin/k3s kubectl rollout status statefulset/argocd-redis-ha-server -n {{ argocd_namespace }} --timeout=300s
+  when:
+    - inventory_hostname == k3s_server_init_node
+    - argocd_redis_ha_enabled | default(true)
+  changed_when: false
+  failed_when: false
+
+
+- name: Wait for ArgoCD Redis HA HAProxy deployment to be rolled out
+  ansible.builtin.command: /usr/local/bin/k3s kubectl rollout status deployment/argocd-redis-ha-haproxy -n {{ argocd_namespace }} --timeout=300s
+  when:
+    - inventory_hostname == k3s_server_init_node
+    - argocd_redis_ha_enabled | default(true)
+  changed_when: false
+
+- name: Apply ArgoCD Manager ServiceAccount and token secret
+  ansible.builtin.shell: |
+    /usr/local/bin/k3s kubectl apply -f - << 'EOF'
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: argocd-manager
+      namespace: kube-system
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: argocd-manager-role-binding
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: cluster-admin
+    subjects:
+      - kind: ServiceAccount
+        name: argocd-manager
+        namespace: kube-system
+    ---
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: argocd-sa-token
+      namespace: kube-system
+      annotations:
+        kubernetes.io/service-account.name: argocd-manager
+    type: kubernetes.io/service-account-token
+    EOF
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Wait for argocd-sa-token to be populated with token
+  ansible.builtin.shell: >
+    /usr/local/bin/k3s kubectl get secret argocd-sa-token -n kube-system
+    -o jsonpath='{.data.token}'
+  register: sa_token_query
+  until: sa_token_query.stdout | length > 0
+  retries: 15
+  delay: 2
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Extract ServiceAccount bearer token
+  ansible.builtin.shell: >
+    /usr/local/bin/k3s kubectl get secret argocd-sa-token -n kube-system
+    -o jsonpath='{.data.token}' | base64 -d
+  register: sa_bearer_token
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Extract cluster CA certificate data
+  ansible.builtin.shell: >
+    /usr/local/bin/k3s kubectl get secret argocd-sa-token -n kube-system
+    -o jsonpath='{.data.ca\.crt}'
+  register: sa_ca_data
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+
+- name: Generate and apply ArgoCD cluster registration secret
+  ansible.builtin.shell: |
+    /usr/local/bin/k3s kubectl apply -f - << EOF
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: "cluster-{{ k3s_cluster_domain }}"
+      namespace: "{{ argocd_namespace }}"
+      labels:
+        argocd.argoproj.io/secret-type: cluster
+    type: Opaque
+    stringData:
+      name: "{{ k3s_cluster_domain }}"
+      server: "https://{{ k3s_cluster_domain }}:6443"
+      config: |
+        {
+          "bearerToken": "{{ sa_bearer_token.stdout }}",
+          "tlsClientConfig": {
+            "insecure": false,
+            "caData": "{{ sa_ca_data.stdout }}"
+          }
+        }
+    EOF
+  when: inventory_hostname == k3s_server_init_node
+
+- name: Save cluster registration manifest locally
+  ansible.builtin.copy:
+    content: |
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "cluster-{{ k3s_cluster_domain }}"
+        namespace: "{{ argocd_namespace }}"
+        labels:
+          argocd.argoproj.io/secret-type: cluster
+      type: Opaque
+      stringData:
+        name: "{{ k3s_cluster_domain }}"
+        server: "https://{{ k3s_cluster_domain }}:6443"
+        config: |
+          {
+            "bearerToken": "{{ sa_bearer_token.stdout }}",
+            "tlsClientConfig": {
+              "insecure": false,
+              "caData": "{{ sa_ca_data.stdout }}"
+            }
+          }
+    dest: "{{ playbook_dir }}/../argocd/cluster.yaml"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: inventory_hostname == k3s_server_init_node
+
+
+- name: Retrieve ArgoCD initial admin password
+  ansible.builtin.shell: >
+    /usr/local/bin/k3s kubectl get secret argocd-initial-admin-secret
+    -n {{ argocd_namespace }} -o jsonpath='{.data.password}' | base64 -d
+  register: argocd_admin_password
+  when: inventory_hostname == k3s_server_init_node
+  changed_when: false
+  failed_when: false
+
+- name: Display ArgoCD Access Information
+  ansible.builtin.debug:
+    msg:
+      - "=========================================================="
+      - " ArgoCD GitOps has been successfully deployed!             "
+      - "=========================================================="
+      - " UI URL:  https://{{ argocd_domain }}"
+      - " User:    admin"
+      - " Pass:    {{ argocd_admin_password.stdout if (argocd_admin_password.rc is defined and argocd_admin_password.rc == 0 and argocd_admin_password.stdout | length > 0) else 'Password already changed or secret removed' }}"
+      - " Ingress: Traefik IngressRoute (websecure: 443, web: 80 -> redirect)"
+      - " LoadBalancer IP: {{ traefik_lb_ip }}"
+      - " Cluster: {{ k3s_cluster_domain }} (https://{{ k3s_cluster_domain }}:6443)"
+      - " CLI Login: argocd login {{ argocd_domain }} --username admin"
+      - "=========================================================="
+  when: inventory_hostname == k3s_server_init_node
+
+

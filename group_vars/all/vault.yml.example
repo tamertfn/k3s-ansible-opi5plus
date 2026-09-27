@@ -1,0 +1,51 @@
+---
+# =============================================================
+# Example Secrets and Local Overrides Template
+# =============================================================
+# Copy this file to 'group_vars/all/vault.yml' and replace values with your own:
+#   cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+#
+# 'group_vars/all/vault.yml' is ignored by .gitignore and will not be pushed to Git.
+
+# Custom base domain (defaults to homelab.internal in all.yml)
+base_domain: "homelab.internal"
+
+# Admin workstation IP for UFW firewall restriction
+admin_client_ip: "192.168.1.100"
+
+# Cluster network subnet
+cluster_network_subnet: "192.168.1.0/24"
+
+# Kube-VIP HA virtual IP
+kube_vip_address: "192.168.1.200"
+
+# K3s cluster join token (replace with a secure random string)
+k3s_token: "CHANGE_ME_TO_A_SECURE_CLUSTER_TOKEN"
+
+# Cilium LoadBalancer IP Pool range
+cilium_lb_pool_start: "192.168.1.210"
+cilium_lb_pool_stop: "192.168.1.230"
+
+# Traefik Ingress LoadBalancer static IP
+traefik_lb_ip: "192.168.1.210"
+
+# Cluster /etc/hosts entries
+cluster_hosts_entries:
+  - ip: "192.168.1.200"
+    canonical: "k8s.{{ base_domain }}"
+    aliases: "kube-vip"
+  - ip: "192.168.1.201"
+    canonical: "opi01.{{ base_domain }}"
+    aliases: "opi01"
+  - ip: "192.168.1.202"
+    canonical: "opi02.{{ base_domain }}"
+    aliases: "opi02"
+  - ip: "192.168.1.203"
+    canonical: "opi03.{{ base_domain }}"
+    aliases: "opi03"
+  - ip: "192.168.1.100"
+    canonical: "admin.{{ base_domain }}"
+    aliases: "admin"
+  - ip: "192.168.1.210"
+    canonical: "opi.{{ base_domain }}"
+    aliases: "traefik.opi.{{ base_domain }} argocd.opi.{{ base_domain }}"

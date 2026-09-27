@@ -1,0 +1,70 @@
+---
+- name: Create SSH CA directory
+  ansible.builtin.file:
+    path: "{{ pki_base_dir }}/ssh_ca"
+    state: directory
+    mode: '0700'
+
+- name: Generate SSH User CA key pair
+  ansible.builtin.command:
+    cmd: >
+      ssh-keygen -t {{ ssh_ca_key_type }}
+      -f "{{ pki_base_dir }}/ssh_ca/{{ ssh_ca_key_name }}"
+      -N ""
+      -C "{{ ssh_ca_comment }}"
+    creates: "{{ pki_base_dir }}/ssh_ca/{{ ssh_ca_key_name }}"
+
+- name: Generate admin client SSH key pair
+  ansible.builtin.command:
+    cmd: >
+      ssh-keygen -t {{ ssh_ca_key_type }}
+      -f "{{ ssh_client_key_path | expanduser }}"
+      -N ""
+      -C "admin@{{ admin_client_ip }}"
+    creates: "{{ ssh_client_key_path | expanduser }}"
+
+- name: Sign admin client SSH public key with SSH CA
+  ansible.builtin.command:
+    cmd: >
+      ssh-keygen -s "{{ pki_base_dir }}/ssh_ca/{{ ssh_ca_key_name }}"
+      -I "admin-client-certificate"
+      -n "{{ ssh_ca_principals | join(',') }}"
+      -V "{{ ssh_cert_validity }}"
+      "{{ ssh_client_key_path | expanduser }}.pub"
+    creates: "{{ ssh_client_key_path | expanduser }}-cert.pub"
+
+- name: Read generated SSH certificate details
+  ansible.builtin.command:
+    cmd: "ssh-keygen -L -f {{ ssh_client_key_path | expanduser }}-cert.pub"
+  register: ssh_cert_info
+  changed_when: false
+
+- name: Display generated SSH certificate summary
+  ansible.builtin.debug:
+    var: ssh_cert_info.stdout_lines
+
+- name: Update local SSH configuration file
+  ansible.builtin.blockinfile:
+    path: "{{ '~/.ssh/config' | expanduser }}"
+    create: true
+    mode: '0600'
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - ORANGE PI NODES"
+    block: |
+      {% for host in groups['opi_nodes'] %}
+      Host {{ host }}
+          HostName {{ hostvars[host]['ansible_host'] }}
+          Port {{ target_ssh_port }}
+          User {{ ansible_user }}
+          IdentityFile {{ ssh_client_key_path }}
+          CertificateFile {{ ssh_client_key_path }}-cert.pub
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null
+
+      {% endfor %}
+      Host opi* {{ groups['opi_nodes'] | default([]) | map('extract', hostvars, 'ansible_host') | join(' ') }}
+          Port {{ target_ssh_port }}
+          User {{ ansible_user }}
+          IdentityFile {{ ssh_client_key_path }}
+          CertificateFile {{ ssh_client_key_path }}-cert.pub
+          StrictHostKeyChecking no
+          UserKnownHostsFile /dev/null

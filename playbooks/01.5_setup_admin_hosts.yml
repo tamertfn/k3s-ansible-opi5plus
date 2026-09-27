@@ -1,0 +1,23 @@
+---
+# =============================================================
+# Playbook 01.5: Configure Local Admin Workstation /etc/hosts
+# =============================================================
+
+- name: Configure cluster host mappings on Admin workstation
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure cluster host mappings exist in admin /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: "^#?\\s*{{ item.ip | regex_escape }}\\s+"
+        line: "{{ item.ip }} {{ item.canonical }} {{ item.aliases }}"
+        state: present
+      loop: "{{ cluster_hosts_entries }}"
+
+    - name: Display configured admin host entries
+      ansible.builtin.debug:
+        msg: "Configured: {{ item.ip }} -> {{ item.canonical }} ({{ item.aliases }})"
+      loop: "{{ cluster_hosts_entries }}"

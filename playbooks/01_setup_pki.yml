@@ -1,0 +1,9 @@
+---
+- name: Initialize PKI and OpenSSH Certificate Authority
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  roles:
+    - role: pki_ca
+    - role: ssh_ca

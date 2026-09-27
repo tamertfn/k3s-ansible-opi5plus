@@ -1,0 +1,86 @@
+---
+- name: Create PKI directory structure
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0700'
+  loop:
+    - "{{ pki_base_dir }}"
+    - "{{ pki_base_dir }}/root_ca"
+    - "{{ pki_base_dir }}/intermediate_ca"
+    - "{{ pki_base_dir }}/issued_certs"
+
+- name: Generate Root CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ pki_base_dir }}/root_ca/root_ca.key"
+    type: "{{ root_ca_key_type }}"
+    curve: "{{ root_ca_curve }}"
+    mode: '0600'
+
+- name: Generate Root CA CSR
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ pki_base_dir }}/root_ca/root_ca.key"
+    common_name: "{{ root_ca_common_name }}"
+    organization_name: "{{ pki_organization }}"
+    country_name: "{{ pki_country }}"
+    use_common_name_for_san: false
+    basic_constraints:
+      - 'CA:TRUE'
+      - 'pathlen:1'
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+  register: root_ca_csr
+
+- name: Generate self-signed Root CA certificate
+  community.crypto.x509_certificate:
+    path: "{{ pki_base_dir }}/root_ca/root_ca.crt"
+    csr_content: "{{ root_ca_csr.csr }}"
+    privatekey_path: "{{ pki_base_dir }}/root_ca/root_ca.key"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ root_ca_validity_days }}d"
+    selfsigned_digest: "{{ root_ca_digest }}"
+    mode: '0644'
+
+- name: Generate Intermediate CA private key
+  community.crypto.openssl_privatekey:
+    path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.key"
+    type: "{{ intermediate_ca_key_type }}"
+    curve: "{{ intermediate_ca_curve }}"
+    mode: '0600'
+
+- name: Generate Intermediate CA CSR
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.key"
+    common_name: "{{ intermediate_ca_common_name }}"
+    organization_name: "{{ pki_organization }}"
+    country_name: "{{ pki_country }}"
+    use_common_name_for_san: false
+    basic_constraints:
+      - 'CA:TRUE'
+      - 'pathlen:0'
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+  register: intermediate_ca_csr
+
+- name: Sign Intermediate CA certificate with Root CA
+  community.crypto.x509_certificate:
+    path: "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt"
+    csr_content: "{{ intermediate_ca_csr.csr }}"
+    ownca_path: "{{ pki_base_dir }}/root_ca/root_ca.crt"
+    ownca_privatekey_path: "{{ pki_base_dir }}/root_ca/root_ca.key"
+    provider: ownca
+    ownca_not_after: "+{{ intermediate_ca_validity_days }}d"
+    ownca_digest: "{{ intermediate_ca_digest }}"
+    mode: '0644'
+
+- name: Create CA certificate chain file
+  ansible.builtin.shell: |
+    cat "{{ pki_base_dir }}/intermediate_ca/intermediate_ca.crt" "{{ pki_base_dir }}/root_ca/root_ca.crt" > "{{ pki_base_dir }}/intermediate_ca/ca_chain.crt"
+  args:
+    creates: "{{ pki_base_dir }}/intermediate_ca/ca_chain.crt"

@@ -1,0 +1,19 @@
+# Managed by Ansible - SSH Hardening
+Port {{ target_ssh_port }}
+
+# SSH CA Authentication
+TrustedUserCAKeys /etc/ssh/trusted-user-ca-keys.pem
+
+# Authentication hardening
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin prohibit-password
+MaxAuthTries 4
+X11Forwarding no
+
+# Restrict SSH access exclusively to admin workstation IP
+Match Address *,!{{ admin_client_ip }}
+    PubkeyAuthentication no
+    PasswordAuthentication no

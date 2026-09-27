@@ -1,0 +1,42 @@
+---
+# =============================================================
+# Playbook 05: Deploy ArgoCD GitOps with Traefik IngressRoute
+# =============================================================
+
+- name: Detect active SSH port and establish connection parameters
+  hosts: opi_nodes
+  gather_facts: false
+  tasks:
+    - name: Probe target SSH port
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ target_ssh_port }}"
+        timeout: 2
+        state: started
+      register: target_port_probe
+      ignore_errors: true
+      delegate_to: localhost
+
+    - name: Assign active SSH connection port
+      ansible.builtin.set_fact:
+        ansible_port: "{{ target_ssh_port if target_port_probe is succeeded else default_ssh_port }}"
+
+- name: Update cluster DNS host mappings on all nodes
+  hosts: opi_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure cluster host mappings exist in /etc/hosts
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: "^#?\\s*{{ item.ip | regex_escape }}\\s+"
+        line: "{{ item.ip }} {{ item.canonical }} {{ item.aliases }}"
+        state: present
+      loop: "{{ cluster_hosts_entries }}"
+
+- name: Deploy ArgoCD GitOps with Traefik IngressRoute and Intermediate CA TLS
+  hosts: opi_nodes
+  become: true
+  gather_facts: false
+  roles:
+    - role: argocd

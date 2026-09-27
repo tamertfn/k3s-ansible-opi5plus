@@ -1,0 +1,171 @@
+---
+# =============================================================
+# Generic Cluster Defaults (Public / Version-Controlled)
+# =============================================================
+# To override any of these variables or set secrets locally,
+# copy 'group_vars/all/vault.yml.example' to 'group_vars/all/vault.yml'.
+
+# Base domain and cluster endpoints
+base_domain: "homelab.internal"
+k3s_cluster_domain: "k8s.{{ base_domain }}"
+
+# Network configuration
+admin_client_ip: "192.168.1.100"
+cluster_network_subnet: "192.168.1.0/24"
+target_ssh_port: 2222
+default_ssh_port: 22
+
+# System users
+ansible_user: "ubuntu"
+
+# Baseline system packages for node hardening and Kubernetes prerequisites
+node_essential_packages:
+  - ufw
+  - openssh-server
+  - curl
+  - wget
+  - git
+  - jq
+  - htop
+  - iotop
+  - btop
+  - nfs-common
+  - open-iscsi
+  - ca-certificates
+  - gnupg
+  - tar
+  - gzip
+  - unzip
+  - net-tools
+  - ethtool
+  - iproute2
+  - iptables
+  - iputils-ping
+  - conntrack
+  - socat
+  - bridge-utils
+  - smartmontools
+  - nvme-cli
+  - apparmor
+  - apparmor-utils
+
+# Storage paths
+pki_base_dir: "{{ playbook_dir }}/pki"
+
+# PKI organizational details
+pki_country: "TR"
+pki_organization: "{{ base_domain }}"
+
+# Root CA configuration
+root_ca_common_name: "{{ base_domain }} Root CA"
+root_ca_validity_days: 3650
+root_ca_key_type: "ECC"
+root_ca_curve: "secp384r1"
+root_ca_digest: "sha384"
+
+# Intermediate CA configuration
+intermediate_ca_common_name: "{{ base_domain }} Intermediate CA"
+intermediate_ca_validity_days: 1825
+intermediate_ca_key_type: "ECC"
+intermediate_ca_curve: "secp384r1"
+intermediate_ca_digest: "sha384"
+
+# End-entity client and server certificate defaults
+client_cert_default_validity_days: 365
+client_cert_default_key_type: "ECC"
+client_cert_default_curve: "secp384r1"
+client_cert_default_digest: "sha384"
+
+# OpenSSH CA configuration
+ssh_ca_key_type: "ed25519"
+ssh_ca_key_name: "{{ base_domain | replace('.', '_') }}_ssh_user_ca"
+ssh_ca_comment: "{{ base_domain }} SSH User CA"
+ssh_ca_principals:
+  - "root"
+  - "ubuntu"
+  - "{{ ansible_user }}"
+ssh_cert_validity: "+52w"
+ssh_client_key_path: "~/.ssh/id_{{ ssh_ca_key_type }}_admin"
+
+# K3s cluster configuration
+k3s_version: "v1.37.0+k3s1"
+k3s_server_init_node: "opi01"
+k3s_token: "CHANGE_ME_TO_A_SECURE_TOKEN"
+
+# Kube-VIP HA configuration
+kube_vip_address: "192.168.1.101"
+kube_vip_version: "v0.8.9"
+
+# K3s CNI & Network parameters (Prepared for Cilium)
+k3s_flannel_backend: "none"
+k3s_disable_network_policy: true
+k3s_disable_kube_proxy: true
+k3s_disable_servicelb: true
+k3s_disable_traefik: true
+
+k3s_tls_san:
+  - "{{ kube_vip_address }}"
+  - "{{ k3s_cluster_domain }}"
+  - "{{ base_domain }}"
+  - "127.0.0.1"
+
+# Core system components HA replica configuration
+k3s_core_deployments_replicas:
+  coredns: 3
+  metrics-server: 3
+  local-path-provisioner: 2
+
+# Static cluster host mappings for /etc/hosts
+cluster_hosts_entries:
+  - ip: "192.168.1.102"
+    canonical: "k8s.{{ base_domain }}"
+    aliases: "kube-vip"
+  - ip: "192.168.1.105"
+    canonical: "opi01.{{ base_domain }}"
+    aliases: "opi01"
+  - ip: "192.168.1.106"
+    canonical: "opi02.{{ base_domain }}"
+    aliases: "opi02"
+  - ip: "192.168.1.107"
+    canonical: "opi03.{{ base_domain }}"
+    aliases: "opi03"
+  - ip: "192.168.1.101"
+    canonical: "admin.{{ base_domain }}"
+    aliases: "admin"
+  - ip: "192.168.1.103"
+    canonical: "opi.{{ base_domain }}"
+    aliases: "traefik.opi.{{ base_domain }} argocd.opi.{{ base_domain }}"
+
+# Cilium CNI & L2 Announcement Configuration
+cilium_chart_version: "1.20.2"
+cilium_chart_url: "oci://quay.io/cilium/charts/cilium"
+cilium_k8s_service_host: "k8s.{{ base_domain }}"
+cilium_k8s_service_port: 6443
+cilium_lb_pool_name: "default-lb-pool"
+cilium_lb_pool_start: "192.168.1.210"
+cilium_lb_pool_stop: "192.168.1.230"
+cilium_interface_pattern: "^enP.*"
+
+# Traefik Ingress & Gateway Configuration
+traefik_chart_version: "41.6.0"
+traefik_chart_repo_name: "traefik"
+traefik_chart_repo_url: "https://traefik.github.io/charts"
+traefik_namespace: "traefik"
+traefik_replicas: 3
+traefik_lb_ip: "192.168.1.210"
+traefik_base_domain: "opi.{{ base_domain }}"
+traefik_dashboard_domain: "traefik.opi.{{ base_domain }}"
+traefik_tls_secret_name: "local-selfsigned-tls"
+
+# ArgoCD GitOps Configuration
+argocd_chart_version: "10.9.2"
+argocd_chart_repo_name: "argo"
+argocd_chart_repo_url: "https://argoproj.github.io/argo-helm"
+argocd_namespace: "argocd"
+argocd_domain: "argocd.opi.{{ base_domain }}"
+argocd_tls_secret_name: "local-selfsigned-tls"
+argocd_server_replicas: 2
+argocd_repo_server_replicas: 2
+argocd_controller_replicas: 1
+argocd_applicationset_replicas: 2
+argocd_redis_ha_enabled: true

@@ -1,0 +1,17 @@
+# Cilium Helm Values for K3s HA Cluster (with Kube-VIP & L2 Announcements)
+k8sServiceHost: "k8s.tamer.io"
+k8sServicePort: 6443
+
+# Replaces kube-proxy with eBPF
+kubeProxyReplacement: "true"
+
+# Enable L2 ARP Announcements for LoadBalancer Services
+l2announcements:
+  enabled: true
+
+# Hubble observability (disabled for minimal initial footprint)
+hubble:
+  enabled: false
+
+envoy:
+  enabled: false

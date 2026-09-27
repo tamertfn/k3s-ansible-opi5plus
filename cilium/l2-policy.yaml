@@ -1,0 +1,18 @@
+apiVersion: "cilium.io/v2alpha1"
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: "default-l2-policy"
+spec:
+  # Matches all Services of type LoadBalancer
+  serviceSelector: {}
+  nodeSelector:
+    matchExpressions:
+      - key: kubernetes.io/os
+        operator: In
+        values:
+          - linux
+  # Regular expression matching the Orange Pi network interfaces (enP*)
+  interfaces:
+    - "^enP.*"
+  externalIPs: true
+  loadBalancerIPs: true
