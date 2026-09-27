@@ -96,11 +96,23 @@
 # -------------------------------------------------------------
 # Firewall (UFW) Configuration for Kubernetes & Kube-VIP
 # -------------------------------------------------------------
-- name: Allow intra-cluster communication in UFW
+- name: Allow intra-cluster node communication in UFW
   community.general.ufw:
     rule: allow
     src: "{{ cluster_network_subnet }}"
-    comment: "Kubernetes and Cilium internal cluster subnet"
+    comment: "Kubernetes node network subnet"
+
+- name: Allow Kubernetes Pod network in UFW
+  community.general.ufw:
+    rule: allow
+    src: "{{ k3s_cluster_cidr | default('10.0.0.0/16') }}"
+    comment: "Kubernetes Pods subnet"
+
+- name: Allow Kubernetes Service network in UFW
+  community.general.ufw:
+    rule: allow
+    src: "{{ k3s_service_cidr | default('10.43.0.0/16') }}"
+    comment: "Kubernetes Services subnet"
 
 - name: Allow K3s API access from admin workstation in UFW
   community.general.ufw:
