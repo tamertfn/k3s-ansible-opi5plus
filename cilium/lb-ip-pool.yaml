@@ -7,4 +7,4 @@ spec:
   # Configured to avoid conflict with admin (192.168.1.190), Kube-VIP (192.168.1.200), and nodes (192.168.1.201-203)
   blocks:
     - start: "192.168.1.210"
-      stop: "192.168.1.210"
+      stop: "192.168.1.215"

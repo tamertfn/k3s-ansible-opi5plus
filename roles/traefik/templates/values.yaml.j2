@@ -35,6 +35,8 @@ service:
   type: LoadBalancer
   annotations:
     io.cilium/lb-ipam-ips: "{{ traefik_lb_ip }}"
+  spec:
+    externalTrafficPolicy: Local
 
 ports:
   web:
@@ -65,3 +67,11 @@ extraObjects:
         regex: ^(https?://[^/]+)/?$
         replacement: ${1}/dashboard/
         permanent: true
+  - apiVersion: traefik.io/v1alpha1
+    kind: TLSStore
+    metadata:
+      name: default
+      namespace: {{ traefik_namespace }}
+    spec:
+      defaultCertificate:
+        secretName: {{ traefik_tls_secret_name }}
