@@ -115,7 +115,7 @@ k3s_tls_san:
 k3s_core_deployments_replicas:
   coredns: 3
   metrics-server: 3
-  local-path-provisioner: 2
+  local-path-provisioner: 1
 
 # Static cluster host mappings for /etc/hosts
 cluster_hosts_entries:
