@@ -3,7 +3,7 @@
 # Playbook 01.5: Configure Local Admin Workstation /etc/hosts
 # =============================================================
 
-- name: Configure cluster host mappings on Admin workstation
+- name: Configure cluster host mappings and Root CA trust on Admin workstation
   hosts: localhost
   connection: local
   become: true
@@ -21,3 +21,22 @@
       ansible.builtin.debug:
         msg: "Configured: {{ item.ip }} -> {{ item.canonical }} ({{ item.aliases }})"
       loop: "{{ cluster_hosts_entries }}"
+
+    - name: Check if Root CA exists locally
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../pki/root_ca/root_ca.crt"
+      register: root_ca_stat
+
+    - name: Install Root CA into system ca-certificates
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../pki/root_ca/root_ca.crt"
+        dest: /usr/local/share/ca-certificates/homelab-root-ca.crt
+        owner: root
+        group: root
+        mode: '0644'
+      when: root_ca_stat.stat.exists
+      notify: Update CA certificates
+
+  handlers:
+    - name: Update CA certificates
+      ansible.builtin.command: update-ca-certificates
