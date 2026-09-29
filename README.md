@@ -1,127 +1,134 @@
-# Orange Pi 5 Plus Security Baseline and PKI Automation
+# Orange Pi 5 Plus HA K3s Cluster & Zero-Trust Hardening
 
-Automated PKI generation, OpenSSH CA setup, and Orange Pi node security hardening using Ansible.
+Automated provisioning of a production-ready, highly available **K3s Kubernetes cluster** across 3 bare-metal nodes (Orange Pi 5 Plus or any ARM64/x86 Linux boards) with **Cilium (eBPF)**, **Traefik Gateway**, **OpenSSH CA Hardening**, and **ArgoCD GitOps**.
 
-## Architecture and Lifespans
+---
 
-- **Root CA**: 10 years (`3650` days), ECC secp384r1.
-- **Intermediate CA**: 5 years (`1825` days), ECC secp384r1.
-- **TLS Application / Ingress Certificates**: 1 year (`365` days), ECC secp384r1.
-- **SSH User Certificate**: 1 year (`+52w`), Ed25519.
+## 📋 Prerequisites
 
-## Security Baseline
+Before running the playbooks, ensure you have the following ready:
 
-- SSH relocated to port `2222`.
-- Direct password authentication disabled.
-- Passwordless access enforced via OpenSSH CA signed user certificates.
-- Incoming SSH traffic restricted by UFW strictly to admin workstation (`192.168.1.190`).
-- Default firewall policy: incoming deny, outgoing allow.
+### 1. Admin / Bootstrap Machine (Workstation)
+* **OS:** Linux, macOS, or WSL2.
+* **Tools Installed:**
+  * `ansible` (>= 2.14)
+  * `python3` & `python3-pip`
+  * `openssl` & `ssh-keygen`
+  * `git`
+* **Network:** Directly connected to the same LAN as the target nodes.
+* **SSH Key:** An existing local SSH key pair (e.g., `~/.ssh/id_ed25519` or `~/.ssh/id_rsa`).
 
-## Directory Structure
+### 2. 3x Target Nodes (e.g., Orange Pi 5 Plus)
+* **OS:** Clean, freshly flashed **Ubuntu 24.04 LTS (Server)**.
+* **Network:** Each node assigned a **static IP** (via router DHCP reservation or Netplan).
+* **User:** A standard user with passwordless `sudo` rights (default: `ubuntu`).
+* **SSH:** Standard OpenSSH server running on default port `22` with key or password access.
+* **Connectivity:** Reachable from the bootstrap workstation (`ping` and `ssh ubuntu@<ip>` work).
 
-```text
-k3s-ansible-opi5plus/
-├── ansible.cfg
-├── inventory.example.ini
-├── inventory.ini           # (gitignored, copy from inventory.example.ini)
-├── group_vars/
-│   └── all/
-│       ├── all.yml         # Generic public defaults
-│       ├── vault.yml.example
-│       └── vault.yml       # (gitignored, copy from vault.yml.example)
-├── playbooks/
-│   ├── 01_setup_pki.yml
-│   ├── 01.5_setup_admin_hosts.yml
-│   ├── 02_harden_nodes.yml
-│   ├── 03_deploy_k3s.yml
-│   ├── 04_cilium_traefik.yml
-│   ├── 05_deploy_argocd.yml
-│   └── issue_cert.yml
-├── roles/
-│   ├── pki_ca/
-│   ├── ssh_ca/
-│   ├── node_hardening/
-│   ├── k8s_prereqs/
-│   ├── k3s_cluster/
-│   ├── cilium/
-│   ├── traefik/
-│   └── argocd/
-├── cilium/
-├── traefik/
-├── argocd/
-└── README.md
-```
+---
 
-## Execution Workflow
+## ⚙️ Configuration (Files to Edit)
 
-### Step 0: Configure Inventory and Secrets
+Only **2 files** need to be customized before running the playbooks:
 
-Copy the example templates and set your actual node IPs and cluster token:
+### Step 1: Node Inventory (`inventory.ini`)
+
+Copy the example template and specify the static IPs of your 3 nodes:
 
 ```bash
-# 1. Copy example inventory and edit your node IP addresses:
 cp inventory.example.ini inventory.ini
+```
 
-# 2. Copy example vault template and set your secure cluster token:
+Edit `inventory.ini`:
+```ini
+[opi_nodes]
+opi01 ansible_host=192.168.1.201
+opi02 ansible_host=192.168.1.202
+opi03 ansible_host=192.168.1.203
+```
+
+---
+
+### Step 2: Secrets & Cluster Variables (`group_vars/all/vault.yml`)
+
+Copy the secrets template (this file is `.gitignore`d and will never be pushed to Git):
+
+```bash
 cp group_vars/all/vault.yml.example group_vars/all/vault.yml
 ```
 
-### Step 1: Initialize PKI and SSH CA
+Edit `group_vars/all/vault.yml` and adjust the essential values:
 
-Run the local setup playbook to generate the Root CA, Intermediate CA, SSH CA, and local admin certificate:
+| Variable | Description | Example |
+| :--- | :--- | :--- |
+| `base_domain` | Your root or local domain | `homelab.internal` or `example.com` |
+| `admin_client_ip` | IP of your bootstrap machine (for UFW SSH whitelist) | `192.168.1.100` |
+| `cluster_network_subnet` | Local LAN subnet | `192.168.1.0/24` |
+| `kube_vip_address` | Static Virtual IP for Kube-VIP HA API endpoint | `192.168.1.200` |
+| `k3s_token` | Secret cluster join token (generate a random string) | `openssl rand -hex 32` |
+| `cilium_lb_pool_start/stop` | IP range reserved for Cilium LoadBalancers | `192.168.1.210` - `192.168.1.230` |
+| `traefik_lb_ip` | Static LoadBalancer IP for Traefik Ingress | `192.168.1.210` |
+| `cluster_hosts_entries` | Hostname-to-IP mappings for `/etc/hosts` | Nodes, VIP, and Admin IPs |
 
+---
+
+## 🚀 Execution Workflow
+
+Run the playbooks sequentially from your bootstrap machine:
+
+### 1. Initialize PKI & SSH CA
+Generates internal Root CA, Intermediate CA, and OpenSSH CA, then signs an SSH user certificate for your local admin user:
 ```bash
 ansible-playbook playbooks/01_setup_pki.yml
 ```
 
-
-### Step 1.5: Configure Local Admin Workstation /etc/hosts
-
-Configure all cluster DNS mappings (`k8s.tamer.io`, `opi01..03`, `traefik.opi.tamer.io`, `argocd.opi.tamer.io`) on the admin workstation:
-
+### 1.5. Update Local `/etc/hosts` (Bootstrap Machine)
+Maps cluster domains (`k8s.<domain>`, `traefik.opi.<domain>`, `argocd.opi.<domain>`) on your local workstation:
 ```bash
 ansible-playbook -K playbooks/01.5_setup_admin_hosts.yml
 ```
 
-### Step 2: Apply Node Hardening
-
-Update apt repositories, upgrade system packages, install baseline utilities (iSCSI, NFS, eBPF tools), configure SSH CA trust, and enforce UFW firewall rules:
-
+### 2. Harden Nodes & Enforce Zero-Trust SSH
+Installs baseline packages, moves SSH to port `2222`, disables password authentication, enforces OpenSSH CA certificate validation, and sets UFW firewall to incoming deny except from your admin IP:
 ```bash
 ansible-playbook playbooks/02_harden_nodes.yml
 ```
 
-
-### Step 3: Deploy HA K3s Cluster with Kube-VIP
-
-Prepare node prerequisites (sysctl, bpffs, swapoff, /etc/hosts) and deploy HA K3s (embedded etcd) with Kube-VIP (192.168.1.200):
-
+### 3. Deploy HA K3s Cluster & Kube-VIP
+Prepares kernel parameters (eBPF, sysctl, swapoff) and provisions a 3-node HA K3s cluster with embedded etcd and Kube-VIP virtual IP:
 ```bash
 ansible-playbook playbooks/03_deploy_k3s.yml
 ```
 
-### Step 4: Deploy Cilium CNI and Traefik Ingress/Gateway
-
-Deploy Cilium with eBPF kube-proxy replacement, L2 announcements, and IP pool; then deploy Traefik Gateway with 3 replicas, Intermediate CA TLS, and dashboard at `https://traefik.opi.tamer.io/`:
-
+### 4. Deploy Cilium CNI & Traefik Ingress
+Deploys Cilium with eBPF kube-proxy replacement and L2 announcement IP pool, followed by HA Traefik Ingress controller:
 ```bash
 ansible-playbook playbooks/04_cilium_traefik.yml
 ```
 
-### Step 5: Deploy ArgoCD GitOps
-
-Deploy ArgoCD with Intermediate CA TLS certificate, Traefik IngressRoute (supporting Web UI and cleartext HTTP/2 gRPC for CLI), and access the UI at `https://argocd.opi.tamer.io/`:
-
+### 5. Deploy ArgoCD GitOps Engine
+Deploys ArgoCD in HA mode with Traefik IngressRoute, gRPC streaming, and TLS certificate integration:
 ```bash
 ansible-playbook playbooks/05_deploy_argocd.yml
 ```
 
-### Extra: Issue TLS Certificates for Applications
+---
 
-Issue a 1-year certificate signed by the Intermediate CA:
+## 🔍 Verification & Access
 
+### Kubernetes Cluster Access
+The kubeconfig file is automatically downloaded to the project root:
 ```bash
-ansible-playbook playbooks/issue_cert.yml -e "cert_domain=example.tamer.io"
+export KUBECONFIG=$(pwd)/kubeconfig
+kubectl get nodes -o wide
 ```
 
+### Hardened SSH Access
+Since port `22` and password authentication are disabled, connect using port `2222` with your CA-signed certificate:
+```bash
+ssh -p 2222 ubuntu@192.168.1.201
+```
 
+### Web Interfaces
+* **ArgoCD:** `https://argocd.opi.<base_domain>`
+* **Traefik Dashboard:** `https://traefik.opi.<base_domain>`
