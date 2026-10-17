@@ -7,8 +7,8 @@
    map to guest = Bad User
    guest account = {{ ansible_user }}
 
-   # Network access control (Allowed Subnets)
-   hosts allow = 127. {{ nas_all_allowed_subnets | join(' ') }}
+   # Network access control (Allowed Subnets + K8s Pod CIDR for HA VIP proxy)
+   hosts allow = 127. 10.42.0.0/16 {{ nas_all_allowed_subnets | join(' ') }}
    hosts deny = ALL
 
    # SMB3 & 2.5GbE Performance Tuning (ARM64 RK3588 NVMe)
