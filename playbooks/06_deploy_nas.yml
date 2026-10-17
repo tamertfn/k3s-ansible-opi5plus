@@ -1,0 +1,10 @@
+---
+# =============================================================
+# Playbook 06: Deploy 2.5G All-Flash NAS (Samba/SMB3 & NFSv4)
+# =============================================================
+
+- name: Configure Dual-Protocol 2.5G NAS Shares and Cross-Node Vault Replication
+  hosts: opi_nodes
+  become: true
+  roles:
+    - nas_server

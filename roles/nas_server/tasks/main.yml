@@ -1,0 +1,158 @@
+---
+# =============================================================
+# 2.5G All-Flash NAS Server (Samba/SMB3 + NFSv4 + Vault Sync)
+# =============================================================
+
+- name: Check if NVMe NAS volume ({{ nas_base_dir }}) is mounted
+  ansible.builtin.command: findmnt -n -o SOURCE {{ nas_base_dir }}
+  register: nas_mount_check
+  changed_when: false
+  failed_when: false
+
+- name: Deploy and configure NAS services on NVMe-equipped nodes
+  when: nas_mount_check.rc == 0 and nas_mount_check.stdout | length > 0
+  block:
+    - name: Ensure Samba and NFS server packages are installed
+      ansible.builtin.apt:
+        name:
+          - samba
+          - nfs-kernel-server
+          - rsync
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Create NAS Vault (Replicated) and Media (Bulk) directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ nas_base_dir }}/vault", mode: "0770" }
+        - { path: "{{ nas_base_dir }}/media", mode: "0775" }
+
+    # ---------------------------------------------------------
+    # Samba (SMB3) Configuration
+    # ---------------------------------------------------------
+    - name: Deploy 2.5GbE-tuned Samba configuration (/etc/samba/smb.conf)
+      ansible.builtin.template:
+        src: smb.conf.j2
+        dest: /etc/samba/smb.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart samba
+
+    - name: Ensure Samba services (smbd & nmbd) are enabled and started
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - smbd
+        - nmbd
+
+    # ---------------------------------------------------------
+    # NFSv4 Server Configuration
+    # ---------------------------------------------------------
+    - name: Deploy NFSv4 exports configuration (/etc/exports)
+      ansible.builtin.template:
+        src: exports.j2
+        dest: /etc/exports
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload nfs exports
+
+    - name: Ensure NFS server service is enabled and started
+      ansible.builtin.systemd:
+        name: nfs-kernel-server
+        state: started
+        enabled: true
+
+    # ---------------------------------------------------------
+    # UFW Firewall Rules for TRUSTED, HOMELAB, and GUEST VLANs
+    # ---------------------------------------------------------
+    - name: Allow SMB (445/tcp) from TRUSTED, HOMELAB, and GUEST networks in UFW
+      community.general.ufw:
+        rule: allow
+        src: "{{ item }}"
+        port: "445"
+        proto: tcp
+        comment: "NAS Samba SMB3"
+      loop: "{{ nas_all_allowed_subnets }}"
+
+    - name: Allow NFSv4 (2049/tcp) from TRUSTED, HOMELAB, and GUEST networks in UFW
+      community.general.ufw:
+        rule: allow
+        src: "{{ item }}"
+        port: "2049"
+        proto: tcp
+        comment: "NAS NFSv4"
+      loop: "{{ nas_all_allowed_subnets }}"
+
+    # ---------------------------------------------------------
+    # Cross-Node Vault Replication (opi01 -> Secondary Nodes)
+    # ---------------------------------------------------------
+    - name: Ensure /root/.ssh directory exists
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Generate dedicated SSH keypair for NAS Vault replication on {{ nas_primary_node }}
+      community.crypto.openssh_keypair:
+        path: /root/.ssh/id_ed25519_nas_sync
+        type: ed25519
+        comment: "nas-vault-sync@{{ nas_primary_node }}"
+        owner: root
+        group: root
+        mode: '0600'
+      when: inventory_hostname == nas_primary_node
+
+    - name: Read NAS sync public key from {{ nas_primary_node }}
+      ansible.builtin.slurp:
+        src: /root/.ssh/id_ed25519_nas_sync.pub
+      register: nas_sync_pubkey
+      delegate_to: "{{ nas_primary_node }}"
+      run_once: true
+
+    - name: Authorize NAS sync public key on secondary NVMe nodes
+      ansible.posix.authorized_key:
+        user: root
+        state: present
+        key: "{{ nas_sync_pubkey.content | b64decode }}"
+      when: inventory_hostname != nas_primary_node
+
+    - name: Deploy NAS Vault replication script on {{ nas_primary_node }}
+      ansible.builtin.template:
+        src: nas-vault-sync.sh.j2
+        dest: /usr/local/bin/nas-vault-sync.sh
+        owner: root
+        group: root
+        mode: '0750'
+      when: inventory_hostname == nas_primary_node
+
+    - name: Deploy systemd service and timer for NAS Vault replication on {{ nas_primary_node }}
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - nas-vault-sync.service
+        - nas-vault-sync.timer
+      when: inventory_hostname == nas_primary_node
+
+    - name: Enable and start nas-vault-sync.timer on {{ nas_primary_node }}
+      ansible.builtin.systemd:
+        name: nas-vault-sync.timer
+        daemon_reload: true
+        enabled: true
+        state: started
+      when: inventory_hostname == nas_primary_node

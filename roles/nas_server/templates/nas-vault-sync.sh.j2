@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Managed by Ansible - Cross-Node Replication for {{ nas_base_dir }}/vault
+# Mirrors critical vault files from {{ nas_primary_node }} to all other NVMe-equipped nodes.
+
+PRIMARY_DIR="{{ nas_base_dir }}/vault/"
+SSH_KEY="/root/.ssh/id_ed25519_nas_sync"
+SSH_PORT="{{ target_ssh_port }}"
+
+{% for host in groups['opi_nodes'] %}
+{% if host != nas_primary_node %}
+TARGET_IP="{{ hostvars[host]['ansible_host'] }}"
+if ssh -p "${SSH_PORT}" -i "${SSH_KEY}" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "root@${TARGET_IP}" "findmnt -n '{{ nas_base_dir }}' >/dev/null 2>&1"; then
+    echo "[$(date -Is)] Syncing ${PRIMARY_DIR} to {{ host }} (${TARGET_IP})..."
+    rsync -aHAX --delete -e "ssh -p ${SSH_PORT} -i ${SSH_KEY} -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "${PRIMARY_DIR}" "root@${TARGET_IP}:${PRIMARY_DIR}"
+    echo "[$(date -Is)] Sync to {{ host }} completed successfully."
+else
+    echo "[$(date -Is)] Skipping {{ host }} (${TARGET_IP}): {{ nas_base_dir }} not mounted or host unreachable."
+fi
+{% endif %}
+{% endfor %}

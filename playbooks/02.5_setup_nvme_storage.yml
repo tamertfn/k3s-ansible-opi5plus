@@ -1,0 +1,14 @@
+---
+# =============================================================
+# Playbook 02.5: NVMe Storage, LVM Provisioning & K3s Migration
+# =============================================================
+# Executes one node at a time (serial: 1) so embedded etcd quorum
+# (2/3 nodes) and cluster services remain 100% online throughout
+# the /var/lib/rancher and /var/log migration from eMMC to NVMe.
+
+- name: Provision NVMe LVM Storage and Migrate K3s Runtime off eMMC
+  hosts: opi_nodes
+  become: true
+  serial: 1
+  roles:
+    - nvme_storage

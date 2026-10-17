@@ -48,6 +48,11 @@ node_essential_packages:
   - nvme-cli
   - apparmor
   - apparmor-utils
+  - lvm2
+  - parted
+  - rsync
+  - nfs-kernel-server
+  - samba
 
 # Storage paths
 pki_base_dir: "{{ playbook_dir }}/pki"
@@ -135,8 +140,8 @@ cluster_hosts_entries:
     canonical: "admin.{{ base_domain }}"
     aliases: "admin"
   - ip: "192.168.1.103"
-    canonical: "opi.{{ base_domain }}"
-    aliases: "traefik.opi.{{ base_domain }} argocd.opi.{{ base_domain }}"
+    canonical: "traefik.{{ base_domain }}"
+    aliases: "argocd.{{ base_domain }}"
 
 # Cilium CNI & L2 Announcement Configuration
 cilium_chart_version: "1.20.2"
@@ -155,19 +160,38 @@ traefik_chart_repo_url: "https://traefik.github.io/charts"
 traefik_namespace: "traefik"
 traefik_replicas: 3
 traefik_lb_ip: "192.168.1.210"
-traefik_base_domain: "opi.{{ base_domain }}"
-traefik_dashboard_domain: "traefik.opi.{{ base_domain }}"
-traefik_tls_secret_name: "local-selfsigned-tls"
+traefik_base_domain: "{{ base_domain }}"
+traefik_dashboard_domain: "traefik.{{ base_domain }}"
+traefik_tls_secret_name: "wildcard-tamer-win-tls"
 
 # ArgoCD GitOps Configuration
 argocd_chart_version: "10.9.2"
 argocd_chart_repo_name: "argo"
 argocd_chart_repo_url: "https://argoproj.github.io/argo-helm"
 argocd_namespace: "argocd"
-argocd_domain: "argocd.opi.{{ base_domain }}"
-argocd_tls_secret_name: "local-selfsigned-tls"
+argocd_domain: "argocd.{{ base_domain }}"
+argocd_tls_secret_name: "wildcard-tamer-win-tls"
 argocd_server_replicas: 2
 argocd_repo_server_replicas: 2
 argocd_controller_replicas: 1
 argocd_applicationset_replicas: 2
 argocd_redis_ha_enabled: true
+
+# NVMe Storage & LVM Allocation (Profile 3: Lean Start + Reserve)
+nvme_device: "/dev/nvme0n1"
+nvme_k3s_partition_size: "80GiB"
+nvme_vg_name: "vg_homelab"
+nvme_lv_longhorn_name: "lv_longhorn"
+nvme_lv_longhorn_size: "250G"
+nvme_lv_nas_name: "lv_nas"
+nvme_lv_nas_size: "800G"
+
+# NAS Server (NFSv4 & Samba/SMB3) Generic Configuration
+nas_base_dir: "/srv/nas"
+nas_primary_node: "opi01"
+nas_trusted_subnets:
+  - "192.168.1.0/24"
+nas_guest_subnet: "192.168.2.0/24"
+nas_all_allowed_subnets:
+  - "192.168.1.0/24"
+  - "192.168.2.0/24"

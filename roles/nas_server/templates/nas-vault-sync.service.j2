@@ -1,0 +1,11 @@
+[Unit]
+Description=Homelab NAS Vault Cross-Node Replication (rsync mirror from {{ nas_primary_node }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/nas-vault-sync.sh
+IOSchedulingClass=best-effort
+IOSchedulingPriority=4

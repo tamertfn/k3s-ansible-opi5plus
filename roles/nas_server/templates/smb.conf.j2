@@ -1,0 +1,50 @@
+# Managed by Ansible - 2.5GbE High-Performance Samba Configuration
+[global]
+   workgroup = WORKGROUP
+   server string = Homelab 2.5G All-Flash NAS (%h)
+   server role = standalone server
+   security = user
+   map to guest = Bad User
+   guest account = {{ ansible_user }}
+
+   # Network access control (Allowed Subnets)
+   hosts allow = 127. {{ nas_all_allowed_subnets | join(' ') }}
+   hosts deny = ALL
+
+   # SMB3 & 2.5GbE Performance Tuning (ARM64 RK3588 NVMe)
+   min protocol = SMB2
+   max protocol = SMB3
+   server multi channel support = yes
+   aio read size = 1
+   aio write size = 1
+   use sendfile = yes
+   socket options = TCP_NODELAY IPTOS_LOWDELAY
+
+   # Disable printing services
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
+
+[vault]
+   comment = Replicated Critical NAS Storage (Authenticated Only)
+   path = {{ nas_base_dir }}/vault
+   browseable = yes
+   writable = yes
+   guest ok = no
+   valid users = {{ ansible_user }}
+   force user = {{ ansible_user }}
+   force group = {{ ansible_user }}
+   create mask = 0660
+   directory mask = 0770
+
+[media]
+   comment = High-Speed 2.5G Media & Shared Storage (Accessible from Living Room & LAN)
+   path = {{ nas_base_dir }}/media
+   browseable = yes
+   writable = yes
+   guest ok = yes
+   force user = {{ ansible_user }}
+   force group = {{ ansible_user }}
+   create mask = 0664
+   directory mask = 0775

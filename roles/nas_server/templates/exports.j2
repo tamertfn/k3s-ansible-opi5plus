@@ -1,0 +1,6 @@
+# Managed by Ansible - NFSv4 Exports for Homelab 2.5G NAS
+# Vault Share (Restricted to TRUSTED and HOMELAB networks)
+{{ nas_base_dir }}/vault {% for net in nas_trusted_subnets %}{{ net }}(rw,sync,no_subtree_check,no_root_squash) {% endfor %}
+
+# Media Share (Accessible from TRUSTED, HOMELAB, and Living Room GUEST networks)
+{{ nas_base_dir }}/media {% for net in nas_trusted_subnets %}{{ net }}(rw,sync,no_subtree_check,no_root_squash) {% endfor %}{{ nas_guest_subnet }}(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=1000)

@@ -1,0 +1,12 @@
+---
+- name: Restart samba
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - smbd
+    - nmbd
+
+- name: Reload nfs exports
+  ansible.builtin.command: exportfs -ra
+  changed_when: true
