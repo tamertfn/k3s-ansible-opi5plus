@@ -34,7 +34,7 @@
         state: present
       loop: "{{ cluster_hosts_entries }}"
 
-- name: Deploy Cilium CNI with eBPF Kube-Proxy Replacement and L2 Announcements
+- name: Deploy Cilium CNI with eBPF Kube-Proxy Replacement, L2 Announcements, and Hubble Observability
   hosts: opi_nodes
   become: true
   gather_facts: false

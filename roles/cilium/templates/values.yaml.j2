@@ -9,10 +9,37 @@ kubeProxyReplacement: "true"
 l2announcements:
   enabled: true
 
-# Hubble observability (disabled initially for minimal footprint)
+# Hubble observability & metrics
 hubble:
-  enabled: false
+  enabled: {{ cilium_hubble_enabled | default(true) | lower }}
+  relay:
+    enabled: {{ cilium_hubble_relay_enabled | default(true) | lower }}
+  ui:
+    enabled: {{ cilium_hubble_ui_enabled | default(true) | lower }}
+  metrics:
+    enabled:
+      - dns
+      - drop
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - "httpV2:exemplars=true;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction"
+    serviceMonitor:
+      enabled: {{ cilium_service_monitor_enabled | default(false) | lower }}
+
+prometheus:
+  enabled: {{ cilium_prometheus_enabled | default(false) | lower }}
+  serviceMonitor:
+    enabled: {{ cilium_service_monitor_enabled | default(false) | lower }}
+
+operator:
+  prometheus:
+    enabled: {{ cilium_operator_prometheus_enabled | default(true) | lower }}
+    serviceMonitor:
+      enabled: {{ cilium_service_monitor_enabled | default(false) | lower }}
 
 envoy:
   enabled: false
+
 
