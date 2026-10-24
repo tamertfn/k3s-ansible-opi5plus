@@ -44,6 +44,21 @@ ports:
   websecure:
     exposedPort: 443
 
+# Traefik JSON Access Logs with Real Client IP headers
+accessLog:
+  enabled: true
+  format: json
+  fields:
+    defaultMode: keep
+    headers:
+      defaultMode: drop
+      names:
+        User-Agent: keep
+        CF-Connecting-IP: keep
+        X-Forwarded-For: keep
+        Cf-Ipcountry: keep
+
+
 ingressRoute:
   dashboard:
     enabled: true
